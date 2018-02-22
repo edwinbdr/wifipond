@@ -15,6 +15,7 @@ Hardware
 - A frame to put it all in
 - Some baking paper, to dissipate the light a bit
 - A [2.5mm DC jack](https://www.aliexpress.com/item/20pcs-Connector-DC-Power-5-5mm-x-2-5mm-female-jack-socket-RF-COAXIAL-CCTV/32727861732.html) to connect up the power supply nicely
+- A button, one will do but I ended up buying [a collection of different buttons](https://www.aliexpress.com/item/Free-shipping-10-Kinds-of-Tactile-Switches-Push-Button-SMD-Tact-Switch-Switch-100Pcs-lot/32728800916.html)
 
 Connections
 -----------
@@ -45,3 +46,4 @@ Software
     - The Adafruit NeoPixel library, installed via IDE library manager
     - The ESP8266WiFi library, installed via IDE library manager
     - The [WEMOS D1 compiler and configuration setup](https://wiki.wemos.cc/tutorials:get_started:get_started_in_arduino)
+- The `wifipond.ino` file from this repository
