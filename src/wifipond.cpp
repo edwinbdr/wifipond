@@ -46,7 +46,7 @@ struct RxControl {
     unsigned :12;
 };
 
-//Aggregate MAC Protocol Data Unit 
+//Aggregate MAC Protocol Data Unit
 struct Ampdu_Info
 {
   uint16 length;
@@ -115,59 +115,213 @@ struct clientinfo parse_data(uint8_t *frame, uint16_t framelen, signed rssi, uns
   return ci;
 }
 
+const uint8_t gamma_eye_correction[] = {
+    0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+    0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  1,  1,  1,  1,
+    1,  1,  1,  1,  1,  1,  1,  1,  1,  2,  2,  2,  2,  2,  2,  2,
+    2,  3,  3,  3,  3,  3,  3,  3,  4,  4,  4,  4,  4,  5,  5,  5,
+    5,  6,  6,  6,  6,  7,  7,  7,  7,  8,  8,  8,  9,  9,  9, 10,
+   10, 10, 11, 11, 11, 12, 12, 13, 13, 13, 14, 14, 15, 15, 16, 16,
+   17, 17, 18, 18, 19, 19, 20, 20, 21, 21, 22, 22, 23, 24, 24, 25,
+   25, 26, 27, 27, 28, 29, 29, 30, 31, 32, 32, 33, 34, 35, 35, 36,
+   37, 38, 39, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 50,
+   51, 52, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 66, 67, 68,
+   69, 70, 72, 73, 74, 75, 77, 78, 79, 81, 82, 83, 85, 86, 87, 89,
+   90, 92, 93, 95, 96, 98, 99,101,102,104,105,107,109,110,112,114,
+  115,117,119,120,122,124,126,127,129,131,133,135,137,138,140,142,
+  144,146,148,150,152,154,156,158,160,162,164,167,169,171,173,175,
+  177,180,182,184,186,189,191,193,196,198,200,203,205,208,210,213,
+  215,218,220,223,225,228,231,233,236,239,241,244,247,249,252,255 };
+
 ////////PIXELS
+
 #define PIN D2
 #define BUTTON_PIN D8
 #define NPIXELS 8*8
-#define NPOS NPIXELS*3 
+#define NPOS NPIXELS*3
 #define DECAY 5
 #define BRIGHTNESS 200
 
 Adafruit_NeoPixel pixels = Adafruit_NeoPixel(NPIXELS, PIN, NEO_GRB + NEO_KHZ800);
 
-void shine_at(int location)
-{
-  uint8_t *p = pixels.getPixels();
-  p[location] = BRIGHTNESS;
-  
-  //Fade all pixels
-  for(int i = NPOS -1; i >=0 ; --i){
-    if(p[i] > DECAY) {
-       p[i] -= DECAY;      
-    } else {
-      p[i] = 0;
-    }
+uint8_t target[NPIXELS * 3];
+uint8_t uncorrected_pixels[NPIXELS * 3];
+
+// Frame refresh, move the pixels towards their target values.
+void move_to_target() {
+  for (uint8_t p = 0; p < NPIXELS * 3; p++) {
+    float diff = ((float) target[p]) - uncorrected_pixels[p];
+    float new_target = uncorrected_pixels[p] + diff * .03;
+
+    uncorrected_pixels[p] = min(255, max(0, (int) new_target));
+  }
+}
+
+// Take the uncorrected pixels, do gamma correction and set the pixels in the
+void gamma_correct_set_pixels() {
+  uint8_t *cur_pixels = pixels.getPixels();
+
+  for (uint8_t p = 0; p < NPIXELS * 3; p++) {
+    //cur_pixels[p] = gamma_eye_correction[uncorrected_pixels[p]];
+    cur_pixels[p] = uncorrected_pixels[p];
   }
   pixels.show();
 }
 
+// Hash for determining position and color.
+uint16_t calculate_mac_hash(uint8_t mac_address[3]) {
 
-void activity_by(uint8_t *mac) {
-  int loc = 0;
-  for(int i = 0; i < ETH_MAC_LEN; ++i) {
-    loc += mac[i];
-    loc = loc % NPOS;
+  uint16_t hash = 17;
+  for(int i = 0; i < 3; i++) {
+      hash = 31 * hash + mac_address[i] * 19;
   }
-  shine_at(loc);
+  return hash;
 }
 
-void packet_callback(uint8_t *buf, uint16_t len)
-{
+
+typedef struct RgbColor {
+    uint8_t r;
+    uint8_t g;
+    uint8_t b;
+} RgbColor;
+
+typedef struct HsvColor {
+    uint8_t h;
+    uint8_t s;
+    uint8_t v;
+} HsvColor;
+
+RgbColor hsv_to_rgb(HsvColor hsv) {
+    RgbColor rgb;
+    uint8_t region, remainder, p, q, t;
+
+    if (hsv.s == 0) {
+        rgb.r = hsv.v;
+        rgb.g = hsv.v;
+        rgb.b = hsv.v;
+        return rgb;
+    }
+
+    region = hsv.h / 43;
+    remainder = (hsv.h - (region * 43)) * 6;
+
+    p = (hsv.v * (255 - hsv.s)) >> 8;
+    q = (hsv.v * (255 - ((hsv.s * remainder) >> 8))) >> 8;
+    t = (hsv.v * (255 - ((hsv.s * (255 - remainder)) >> 8))) >> 8;
+
+    switch (region) {
+        case 0:
+            rgb.r = hsv.v; rgb.g = t; rgb.b = p;
+            break;
+        case 1:
+            rgb.r = q; rgb.g = hsv.v; rgb.b = p;
+            break;
+        case 2:
+            rgb.r = p; rgb.g = hsv.v; rgb.b = t;
+            break;
+        case 3:
+            rgb.r = p; rgb.g = q; rgb.b = hsv.v;
+            break;
+        case 4:
+            rgb.r = t; rgb.g = p; rgb.b = hsv.v;
+            break;
+        default:
+            rgb.r = hsv.v; rgb.g = p; rgb.b = q;
+            break;
+    }
+    return rgb;
+}
+
+
+void light_led(uint8_t x, uint8_t y, uint8_t hue) {
+
+  uint8_t led_id = (y * 8 + x) * 3;
+
+  // Convert hue to RGB value.
+  HsvColor hsv;
+  hsv.h = hue;
+  hsv.s = 255;
+  hsv.v = 196;
+
+  RgbColor rgb = hsv_to_rgb(hsv);
+
+  uint8_t *p = uncorrected_pixels;
+  p[led_id + 0] = rgb.r;
+  p[led_id + 1] = rgb.g;
+  p[led_id + 2] = rgb.b;
+
+  Serial.print(hue);
+  Serial.println();
+
+  Serial.print(rgb.r);
+  Serial.print(" ");
+  Serial.print(rgb.g);
+  Serial.print(" ");
+  Serial.print(rgb.b);
+  Serial.println();
+}
+
+// void shine_at(int location)
+// {
+//   uint8_t *p = pixels.getPixels();
+//   p[location] = BRIGHTNESS;
+//
+//   //Fade all pixels
+//   for (int i = NPOS - 1; i >=0 ; --i){
+//     if (p[i] > DECAY) {
+//        p[i] -= DECAY;
+//     } else {
+//       p[i] = 0;
+//     }
+//   }
+
+//   pixels.show();
+// }
+
+
+void packet_callback(uint8_t *buf, uint16_t len) {
   //len == 128 for beacons
-  
+
   int i = 0;
   uint16_t seq_n_new = 0;
-  
+
   struct sniffer_buf *sniffer = (struct sniffer_buf*) buf;
   //Is data or QOS?
   if ((sniffer->buf[0] == 0x08) || (sniffer->buf[0] == 0x88)) {
     struct clientinfo ci = parse_data(sniffer->buf, 36, sniffer->rx_ctrl.rssi, sniffer->rx_ctrl.channel);
 //    if (memcmp(ci.bssid, ci.station, ETH_MAC_LEN)) {
-      activity_by(ci.station);
+//      activity_by(ci.station);
 //    }
+    for (int i = 0; i < ETH_MAC_LEN; i++) {
+      // Serial.print(ci.bssid[i], HEX);
+      // Serial.print(sniffer->ampdu_info[0].address3[i], HEX);
+
+    }
+    // Serial.println();
+
+    uint8_t *mac_address = sniffer->ampdu_info[0].address3;
+    uint16_t mac_hash = calculate_mac_hash(mac_address);
+    // Serial.println(mac_hash);
+
+
+    // Positioning
+    uint16_t h = mac_hash;
+    uint8_t x = h & ((1 << 3) -1); // bit-mask for 3 right-most bits.
+    uint8_t y = (h & (((1 << 3) -1) << 3)) >> 3; // bit-mask for bits 3 to 6.
+    uint8_t hue = (h >> 8) & ((1 << 8) -1); // bit-mask for last 6 bits.
+    Serial.print(x);
+    Serial.print(" ");
+    Serial.print(y);
+    Serial.print(" ");
+    Serial.print(hue);
+    Serial.println();
+    Serial.println();
+
+    light_led(x, y, hue);
   }
-  
 }
+
+
 
 extern "C" {
 #include "user_interface.h"
@@ -177,29 +331,28 @@ void setup() {
   pixels.begin();
 
   wifi_set_opmode(STATION_MODE);            // Promiscuous works only with station mode
-  wifi_set_channel(1);
+  wifi_set_channel(9);
   wifi_promiscuous_enable(0);
   wifi_set_promiscuous_rx_cb(packet_callback);   // Set up promiscuous callback
   wifi_promiscuous_enable(1);
-  
+
   pinMode(BUTTON_PIN, INPUT);
+
+  Serial.begin(115200);
 }
 
 int channel = 1;
 
 void loop() {
   int buttonVal = digitalRead(BUTTON_PIN);
-  if(buttonVal > 0) {
-    channel += 1;
-    if(channel > 13) {
-      channel = 1;
-    }
+  if (buttonVal > 0) {
+    channel = (channel + 1) % 14;
+
     wifi_set_channel(channel);
-    for(int i = 0; i < 20 ; ++i){
-      shine_at(channel * 3);
-    }
-    delay(1000);
-  } else {
-    delay(100);
+    Serial.print("Channel ");Serial.print(channel);Serial.println();
+    delay(500);
   }
+  move_to_target();
+  gamma_correct_set_pixels();
+  delay(100);  // 50 fps.
 }
