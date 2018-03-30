@@ -4,9 +4,9 @@
 
 #define ETH_MAC_LEN 6
 
-uint8_t broadcast1[3] = { 0x01, 0x00, 0x5e };
-uint8_t broadcast2[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
-uint8_t broadcast3[3] = { 0x33, 0x33, 0x00 };
+const uint8_t broadcast1[3] = { 0x01, 0x00, 0x5e };
+const uint8_t broadcast2[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
+const uint8_t broadcast3[3] = { 0x33, 0x33, 0x00 };
 
 struct clientinfo
 {
@@ -18,6 +18,9 @@ struct clientinfo
   signed rssi;
   uint16_t seq_n;
 };
+
+const uint8_t conv_blur_size = 3;
+const uint8_t conv_blur[3][3] = {{1,2,1},{2,4,2},{1,2,1}};
 
 struct RxControl {
     signed   rssi:8;
@@ -146,14 +149,53 @@ Adafruit_NeoPixel pixels = Adafruit_NeoPixel(NPIXELS, PIN, NEO_GRB + NEO_KHZ800)
 
 uint8_t target[NPIXELS * 3];
 uint8_t uncorrected_pixels[NPIXELS * 3];
+uint8_t new_uncorrected_pixels[NPIXELS * 3];
 
 // Frame refresh, move the pixels towards their target values.
 void move_to_target() {
   for (uint8_t p = 0; p < NPIXELS * 3; p++) {
     float diff = ((float) target[p]) - uncorrected_pixels[p];
-    float new_target = uncorrected_pixels[p] + diff * .03;
+    float new_target = uncorrected_pixels[p]; //+ diff * .03;
 
-    uncorrected_pixels[p] = min(255, max(0, (int) new_target));
+    //uncorrected_pixels[p] = min(255, max(0, (int) new_target));
+  }
+}
+
+void blur() {
+  for (uint16_t i = 0; i < 3 * 8 * 8; i++) {
+    new_uncorrected_pixels[i] = 0;
+  }
+  for (int y = 0; y < 8; y++) {
+    for (int x = 0; x < 8; x++) {
+      uint16_t sum_r = 0;
+      uint16_t sum_g = 0;
+      uint16_t sum_b = 0;
+      for (int yk = -1; yk < conv_blur_size - 1; yk++) {
+        for (int xk = -1; xk < conv_blur_size - 1; xk++) {
+          int target_y = y + yk;
+          int target_x = x + xk;
+          if (target_y > 0 && target_y < 8 && target_x > 0 && target_y < 8) {
+
+            int pixel = target_x + target_y * 8;
+            //Serial.print(pixel);
+            //Serial.print(",");
+            sum_r += (uncorrected_pixels[pixel * 3]) * conv_blur[yk+1][xk+1];
+            sum_g += (uncorrected_pixels[pixel * 3 + 1]) * conv_blur[yk+1][xk+1];
+            sum_b += (uncorrected_pixels[pixel * 3 + 2]) * conv_blur[yk+1][xk+1];
+          }
+        }
+      }
+      sum_r /= 16;
+      sum_g /= 16;
+      sum_b /= 16;
+      int pix = x + y * 8;
+      new_uncorrected_pixels[pix*3] = (uint8_t) min((uint16_t)255,  (uint16_t) sum_r);
+      new_uncorrected_pixels[pix*3 + 1] = (uint8_t) min((uint16_t)255,  (uint16_t) sum_g);
+      new_uncorrected_pixels[pix*3 + 2] = (uint8_t) min((uint16_t)255,  (uint16_t) sum_b);
+    }
+  }
+  for (uint16_t i = 0; i < 3 * 8 * 8; i++) {
+    uncorrected_pixels[i] = new_uncorrected_pixels[i];
   }
 }
 
@@ -161,10 +203,20 @@ void move_to_target() {
 void gamma_correct_set_pixels() {
   uint8_t *cur_pixels = pixels.getPixels();
 
-  for (uint8_t p = 0; p < NPIXELS * 3; p++) {
-    //cur_pixels[p] = gamma_eye_correction[uncorrected_pixels[p]];
-    cur_pixels[p] = uncorrected_pixels[p];
+  for (uint8_t x = 0; x < 8; x++) {
+    for (uint8_t y = 0; y < 8; y++) {
+      uint8_t pixel;
+      if (y % 2 == 0) {
+        pixel = y * 8 + x;
+      } else {
+        pixel = y * 8 + (7-x);
+      }
+      cur_pixels[pixel * 3 + 0] = uncorrected_pixels[(y * 8 + x) * 3 + 0];
+      cur_pixels[pixel * 3 + 1] = uncorrected_pixels[(y * 8 + x) * 3 + 1];
+      cur_pixels[pixel * 3 + 2] = uncorrected_pixels[(y * 8 + x) * 3 + 2];
+    }
   }
+
   pixels.show();
 }
 
@@ -241,7 +293,7 @@ void light_led(uint8_t x, uint8_t y, uint8_t hue) {
   HsvColor hsv;
   hsv.h = hue;
   hsv.s = 255;
-  hsv.v = 196;
+  hsv.v = 255;
 
   RgbColor rgb = hsv_to_rgb(hsv);
 
@@ -250,6 +302,7 @@ void light_led(uint8_t x, uint8_t y, uint8_t hue) {
   p[led_id + 1] = rgb.g;
   p[led_id + 2] = rgb.b;
 
+#ifdef DEBUG
   Serial.print(hue);
   Serial.println();
 
@@ -259,6 +312,7 @@ void light_led(uint8_t x, uint8_t y, uint8_t hue) {
   Serial.print(" ");
   Serial.print(rgb.b);
   Serial.println();
+#endif
 }
 
 // void shine_at(int location)
@@ -292,12 +346,14 @@ void packet_callback(uint8_t *buf, uint16_t len) {
 //    if (memcmp(ci.bssid, ci.station, ETH_MAC_LEN)) {
 //      activity_by(ci.station);
 //    }
+#ifdef DEBUG
     for (int i = 0; i < ETH_MAC_LEN; i++) {
-      // Serial.print(ci.bssid[i], HEX);
-      // Serial.print(sniffer->ampdu_info[0].address3[i], HEX);
+      Serial.print(ci.bssid[i], HEX);
+      Serial.print(sniffer->ampdu_info[0].address3[i], HEX);
 
     }
-    // Serial.println();
+#endif
+    Serial.println();
 
     uint8_t *mac_address = sniffer->ampdu_info[0].address3;
     uint16_t mac_hash = calculate_mac_hash(mac_address);
@@ -308,7 +364,9 @@ void packet_callback(uint8_t *buf, uint16_t len) {
     uint16_t h = mac_hash;
     uint8_t x = h & ((1 << 3) -1); // bit-mask for 3 right-most bits.
     uint8_t y = (h & (((1 << 3) -1) << 3)) >> 3; // bit-mask for bits 3 to 6.
+      
     uint8_t hue = (h >> 8) & ((1 << 8) -1); // bit-mask for last 6 bits.
+#ifdef DEBUG
     Serial.print(x);
     Serial.print(" ");
     Serial.print(y);
@@ -316,6 +374,7 @@ void packet_callback(uint8_t *buf, uint16_t len) {
     Serial.print(hue);
     Serial.println();
     Serial.println();
+#endif
 
     light_led(x, y, hue);
   }
@@ -339,6 +398,14 @@ void setup() {
   pinMode(BUTTON_PIN, INPUT);
 
   Serial.begin(115200);
+
+  /*
+  for(uint16_t i=0; i<pixels.numPixels(); i++) {
+    pixels.setPixelColor(i, pixels.Color(255, 0, 0));
+    pixels.show();
+    delay(300);
+  }
+  */
 }
 
 int channel = 1;
@@ -349,10 +416,13 @@ void loop() {
     channel = (channel + 1) % 14;
 
     wifi_set_channel(channel);
+#ifdef DEBUG
     Serial.print("Channel ");Serial.print(channel);Serial.println();
     delay(500);
+#endif
   }
+  blur();
   move_to_target();
   gamma_correct_set_pixels();
-  delay(100);  // 50 fps.
+  delay(50);  // 50 fps.
 }
